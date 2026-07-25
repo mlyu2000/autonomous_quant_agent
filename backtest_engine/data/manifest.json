@@ -1,0 +1,72 @@
+{
+  "instrument": "XAUUSD",
+  "data_paths": {
+    "M1": "data_lake/XAUUSD_M1.parquet",
+    "M15": "data_lake/XAUUSD_M15.parquet",
+    "H1": "data_lake/XAUUSD_H1.parquet",
+    "H4": "data_lake/XAUUSD_H4.parquet",
+    "D1": "data_lake/XAUUSD_D1.parquet"
+  },
+  "default_timeframes": ["H4", "H1", "D1", "M15", "M1"],
+  "broker": {
+    "initial_cash": 10000.0,
+    "currency": "USD",
+    "contract_size": 100,
+    "lot_step": 0.01,
+    "min_lot": 0.01,
+    "max_lot": 100.0,
+    "leverage": 100
+  },
+  "commission": {
+    "mode": "fixed_round_turn_per_lot",
+    "value": 7.0,
+    "commtype": "COMM_FIXED",
+    "currency": "USD"
+  },
+  "spread": {
+    "model": "static_total_spread",
+    "total": 0.50,
+    "half_spread": 0.25,
+    "applied_to": "mid",
+    "ask": "mid + half_spread",
+    "bid": "mid - half_spread"
+  },
+  "slippage": {
+    "model": "none",
+    "pct": 0.0
+  },
+  "swap": {
+    "enabled": false,
+    "weekend_skip": true,
+    "long_per_lot": -71.5,
+    "short_per_lot": 32.5
+  },
+  "execution": {
+    "close_on_open": false,
+    "close_on_close": false,
+    "default_fill": "close"
+  },
+  "position_sizing": {
+    "mode": "fixed_lot_only",
+    "allowed_modes": ["fixed_lot_only"]
+  },
+  "risk": {
+    "max_positions": 1,
+    "pyramiding": false,
+    "cooldown_bars_min": 0
+  },
+  "indicator_lookahead_policy": {
+    "enforce_no_forward_lookahead": true,
+    "require_bar_shift_on_indicators": true,
+    "min_shift": 1
+  },
+  "test_periods": {
+    "recommended_start": "2006-01-01",
+    "recommended_end": "2025-01-01"
+  },
+  "required_artifact": [
+    "results/raw/run_<timestamp>/metrics.json",
+    "results/raw/run_<timestamp>/stdout.txt",
+    "results/audit/audit_gen_<N>.json"
+  ]
+}
