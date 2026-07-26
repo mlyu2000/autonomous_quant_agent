@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path("/home/ml/projects/autonomous_quant_agent")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "backtest_engine"))
 
 from synthesis_layer.strategy_generator import generate_specs, MECHANISM_CLASSES  # noqa: E402

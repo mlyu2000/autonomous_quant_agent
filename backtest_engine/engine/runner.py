@@ -263,10 +263,13 @@ def run_backtest(
     # Broker
     cerebro.broker.setcash(initial_capital)
 
-    # Fixed commission per oz (no leverage multiplier - XAUUSD is priced per oz)
+    # Commission scheme: XAUUSD per oz. Use Backtrader's standard
+    # setcommission with leverage so margin = price*size/leverage.
+    # leverage=100 per manifest; mult=1 (1 data unit = 1 oz).
     cerebro.broker.setcommission(
         commission=commission,
-        commtype=bt.CommInfoBase.COMM_FIXED,
+        mult=1.0,
+        leverage=100.0,
     )
     if slippage > 0:
         cerebro.broker.set_slippage_perc(slippage)
@@ -275,26 +278,19 @@ def run_backtest(
     cerebro.addanalyzer(CriticAnalyzer, _name="critic")
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trade_analyzer")
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
-    cerebro.addanalyzer(
-        bt.analyzers.SharpeRatio,
-        _name="sharpe",
-        timeframe=bt.TimeFrame.Days,
-    )
-    cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
-
-    # Swap observer: charges swap/rollover on open positions (MT4-style)
-    cerebro.addobserver(
-        SwapObserver,
-        swap_rate_long_per_lot=swap_rate_long_per_lot,
-        swap_rate_short_per_lot=swap_rate_short_per_lot,
-    )
-
-    # Set execution model for MT4 compatibility: orders execute at bar close
-    cerebro.broker.set_coo(coo)
-    cerebro.broker.set_coc(coc)  # coc=True: execute at bar close (MT4-style)
     # NOTE: bt.analyzers.SQN removed — it reports 0 trades when strategies
     # pass string tradeid to buy/close/sell (backtrader metaclass bug).
     # We compute SQN manually from the critic trade log below.
+    # SharpeRatio analyzer with timeframe=Days is O(n^2) on long feeds and
+    # was the cause of multi-minute backtests; we compute Sharpe manually
+    # from the per-bar returns below (O(n), deterministic, correct).
+    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="timereturn")
+
+    # Set execution model: standard market orders (execute on next bar).
+    # coo/coc disabled to avoid the cheat-on-open timing interaction with
+    # pending-order tracking that left positions uncloseable in testing.
+    cerebro.broker.set_coo(False)
+    cerebro.broker.set_coc(False)
 
     # Run (single pass)
     results = cerebro.run(stdstats=False)
@@ -316,6 +312,16 @@ def run_backtest(
     # Final portfolio value
     final_value = cerebro.broker.getvalue()
     final_cash = cerebro.broker.getcash()
+
+    # ── Equity safety guard ──────────────────────────────────────────
+    # The MVP must never report impossible equity (e.g. from unclosed
+    # positions or unvalidated cash deductions). If final value is
+    # non-finite or below -initial_capital (i.e. lost more than 100%,
+    # which is impossible with the MVP's fixed-lot, no-leverage model),
+    # flag it instead of silently returning a wrong number.
+    if not math.isfinite(final_value) or final_value < -initial_capital:
+        error_flag = "equity_guard_tripped"
+        final_value = max(final_value, 0.0)  # do NOT propagate impossible equity
 
     # Net profit: use broker final value (includes swap charges)
     # Manual trade log PnL doesn't include swap/rollover, so broker value is more accurate
@@ -368,40 +374,33 @@ def run_backtest(
         total_pnl = 0.0
     realized_return_pct = (total_pnl / initial_capital) * 100.0
 
-    # Win rate & trade count: prefer manual_trade_log if available,
-    # otherwise fall back to TradeAnalyzer + CriticAnalyzer.
+    # Win rate & trade count: use Backtrader's TradeAnalyzer (reliable).
+    # CriticAnalyzer is used only for the detailed per-trade log (MAFE/MFE etc).
     ta = strat.analyzers.trade_analyzer.get_analysis()
-    if trade_log and len(trade_log) > 0:
-        closed = len(trade_log)
-        won = sum(1 for t in trade_log if t.get("pnl_net", 0) > 0)
-        lost = sum(1 for t in trade_log if t.get("pnl_net", 0) <= 0)
-        win_rate = won / closed if closed > 0 else 0.0
-    else:
-        closed = ta.get("total", {}).get("closed", 0)
-        won = ta.get("won", {}).get("total", 0)
-        lost = ta.get("lost", {}).get("total", 0)
-        win_rate = won / closed if closed > 0 else 0.0
-        if closed == 0 and critic_trade_log:
-            closed = len(critic_trade_log)
-            won = sum(1 for t in critic_trade_log if t.get("pnl_net", 0) > 0)
-            lost = sum(1 for t in critic_trade_log if t.get("pnl_net", 0) <= 0)
-            win_rate = won / closed if closed > 0 else 0.0
+    closed = ta.get("total", {}).get("closed", 0)
+    won = ta.get("won", {}).get("total", 0)
+    lost = ta.get("lost", {}).get("total", 0)
+    win_rate = won / closed if closed > 0 else 0.0
 
-    # Sharpe
-    sharpe_raw = strat.analyzers.sharpe.get_analysis()
-    sharpe_val = sharpe_raw.get("sharperatio")
-    if isinstance(sharpe_val, (list, tuple)):
-        sharpe_val = sharpe_val[0] if sharpe_val else None
-    sharpe_ratio = float(sharpe_val) if sharpe_val is not None else None
-
-    # Sortino ratio (approximation from returns analyzer)
-    returns_raw = strat.analyzers.returns.get_analysis()
-    rnorm = returns_raw.get("rnorm", 0.0)
-    if isinstance(rnorm, (list, tuple)):
-        rnorm = rnorm[0] if rnorm else 0.0
+    # Sharpe ratio — computed manually from per-bar returns (O(n), correct).
+    # Annualized using sqrt(252 * bars_per_year_factor). H4 bars => ~6 bars/day
+    # on a 24h market, so annualization factor = sqrt(252 * 6) = sqrt(1512).
+    timereturn = strat.analyzers.timereturn.get_analysis()
+    rets = [v for v in timereturn.values() if v is not None]
+    sharpe_ratio = None
+    if len(rets) > 1:
+        mean_r = sum(rets) / len(rets)
+        var_r = sum((r - mean_r) ** 2 for r in rets) / len(rets)
+        std_r = math.sqrt(var_r)
+        if std_r > 0:
+            # H4 bars: 6 per day, 252 trading days/year => 1512 bars/year
+            sharpe_ratio = (mean_r / std_r) * math.sqrt(1512.0)
     sortino_ratio = None
-    if sharpe_ratio is not None and max_drawdown_pct > 0:
-        sortino_ratio = rnorm / (max_drawdown_pct / 100.0)
+    if sharpe_ratio is not None and max_drawdown_pct > 0 and rets:
+        downside = [r for r in rets if r < 0]
+        n = len(rets)
+        dstd = math.sqrt(sum(r * r for r in downside) / n) if downside else 0.0
+        sortino_ratio = (mean_r / dstd) * math.sqrt(1512.0) if dstd > 0 else None
 
     # SQN — System Quality Number — computed manually from critic trade log
     # because backtrader's SQN analyzer reports 0 trades when strategies

@@ -1,0 +1,6 @@
+# Generated MVP artifacts (runtime outputs)
+strategies/
+results/
+generated_strategies/
+tmp_test_specs/
+.pytest_cache/

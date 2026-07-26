@@ -13,7 +13,7 @@ from pathlib import Path
 import backtrader as bt
 import pytest
 
-PROJECT_ROOT = Path("/home/ml/projects/autonomous_quant_agent")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_PATH = PROJECT_ROOT / "backtest_engine/data_lake/XAUUSD_H4.parquet"
 START_DATE = "2006-01-01"
 END_DATE = "2006-12-31"

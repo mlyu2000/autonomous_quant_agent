@@ -1,10 +1,91 @@
-.venv/
-venv/
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
+env/
+venv/
+.venv/
+env.bak/
+venv.bak/
+*.egg
 *.egg-info/
 dist/
 build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.manifest
+*.spec
+
+# Environments
+.env
+.env.*
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Local simulation outputs / generated artifacts
+backtest_engine/strategies/
+backtest_engine/generated/
+backtest_engine/results/
+knowledge_base/data/processed/
+knowledge_base/data/raw/
+knowledge_base/data/review/
+knowledge_base/data/extraction_test/
+knowledge_base/data/extraction_test_10/
+knowledge_base/data/extraction_with_embeddings/
+knowledge_base/neo4j/
+knowledge_base/logs/
+# Legacy SMB-KB archive (2.6 GB of old versions + media) — NOT in active path
+knowledge_base/archive/
+
+# Frozen market data (XAUUSD parquet). M1 is 161MB > GitHub's 100MB limit;
+# it is excluded from git and must be placed locally (or re-derived) before
+# any M1->higher-TF synthesis. H1/H4/M15/D1 are committed as the frozen MVP set.
+backtest_engine/data_lake/XAUUSD_M1.parquet
+backtest_engine/*.mq4
+backtest_engine/*.htm
+backtest_engine/run_mt5*
+backtest_engine/MQ5TEST.sh
+backtest_engine/mt4_strategies/
+backtest_reports/

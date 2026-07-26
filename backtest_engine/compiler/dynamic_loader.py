@@ -12,7 +12,7 @@ from typing import Any, Dict, Type
 
 import backtrader as bt
 
-AUTOGEN_DIR = Path("/home/ml/projects/autonomous_quant_agent/backtest_engine/generated_strategies")
+AUTOGEN_DIR = Path(__file__).resolve().parents[1] / "generated_strategies"
 AUTOGEN_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -75,22 +75,24 @@ def build_strategy_class(spec: Dict[str, Any]) -> Type[bt.Strategy]:
             for ind in indicators:
                 self._inds[ind["name"]] = _ind(self, ind)
             self._exit_rules = exit_rules
+            self._in_market = False
+
+        def notify_trade(self, trade):
+            # Reset market flag when a trade fully closes.
+            if trade.isclosed:
+                self._in_market = False
 
         def next(self):
-            traded = False
-            if not self.position:
+            if not self._in_market:
                 for rule in entry_rules:
                     if _eval_condition(self, rule.get("condition", ""), rule.get("direction", "long")):
-                        self.buy(size=1, tradeid="entry_long")
-                        traded = True
+                        self.buy(size=1)
+                        self._in_market = True
                         break
             else:
                 for rule in self._exit_rules:
                     if _apply_exit(self, rule):
-                        traded = True
                         break
-            if not traded:
-                return
 
     StrategyClass.__name__ = class_name
     StrategyClass.__qualname__ = class_name
@@ -98,29 +100,95 @@ def build_strategy_class(spec: Dict[str, Any]) -> Type[bt.Strategy]:
 
 
 def _eval_condition(strategy: bt.Strategy, condition: str, direction: str) -> bool:
-    # MVP honest behavior: no opaque condition evaluation.
-    # Only 'placeholder' conditions are supported.
-    if condition == "__always__":
+    """
+    Evaluate an entry condition string against indicator state.
+
+    Supported (safe, explicit) grammar only — no arbitrary eval:
+      close > sma          close < sma
+      close > ema          close < ema
+      rsi < N              rsi > N
+      close > bbands.top   close < bbands.bot
+      macd_hist > 0        macd_hist < 0
+      adx > N
+    Any unrecognized condition returns False (fail-closed, never silently trades).
+    """
+    cond = condition.strip()
+    if cond == "__always__":
         return True
+    if not cond:
+        return False
+
+    inds = strategy._inds
+    close = strategy.data.close[0]
+
+    # RSI threshold
+    if cond.startswith("rsi"):
+        if "rsi" not in inds:
+            return False
+        rsi_val = float(inds["rsi"][0])
+        if cond.endswith("> 70"):
+            return rsi_val > 70
+        if cond.endswith("< 30"):
+            return rsi_val < 30
+        # generic rsi < N / rsi > N
+        import re
+        m = re.match(r"rsi\s*(<|>)\s*(\d+(?:\.\d+)?)", cond)
+        if m:
+            op, val = m.group(1), float(m.group(2))
+            return rsi_val < val if op == "<" else rsi_val > val
+        return False
+
+    # ADX threshold
+    if cond.startswith("adx"):
+        if "adx" not in inds:
+            return False
+        adx_val = float(inds["adx"][0])
+        import re
+        m = re.match(r"adx\s*(<|>)\s*(\d+(?:\.\d+)?)", cond)
+        if m:
+            op, val = m.group(1), float(m.group(2))
+            return adx_val < val if op == "<" else adx_val > val
+        return False
+
+    # MACD histogram sign
+    if cond in ("macd_hist > 0", "macd_hist<0", "macd_hist >0"):
+        return "macd_hist" in inds and float(inds["macd_hist"][0]) > 0
+    if cond in ("macd_hist < 0", "macd_hist>0", "macd_hist <0"):
+        return "macd_hist" in inds and float(inds["macd_hist"][0]) < 0
+
+    # SMA / EMA crosses
+    if cond == "close > sma":
+        return "sma" in inds and close > float(inds["sma"][0])
+    if cond == "close < sma":
+        return "sma" in inds and close < float(inds["sma"][0])
+    if cond == "close > ema":
+        return "ema" in inds and close > float(inds["ema"][0])
+    if cond == "close < ema":
+        return "ema" in inds and close < float(inds["ema"][0])
+
+    # Bollinger bands
+    if cond == "close > bbands.top":
+        return "bbands" in inds and close > float(inds["bbands"].lines.top[0])
+    if cond == "close < bbands.bot":
+        return "bbands" in inds and close < float(inds["bbands"].lines.bot[0])
+
     return False
 
 
 def _apply_exit(strategy: bt.Strategy, rule: Dict[str, Any]) -> bool:
+    """Exit the open position.
+
+    MVP honesty rule: exits use MARKET orders (self.close with no exectype)
+    so they always fill on the next bar. Limit/Stop TP/SL are recorded for
+    reporting but the actual close is a market order — this guarantees the
+    position closes and trade statistics are real, never silently stuck.
+    """
     params = rule.get("params", {})
-    if rule.get("exit_type") == "tp" and strategy.position:
-        pct = float(params.get("value", 0.01))
-        price = strategy.position.price * (1.0 + pct)
-        strategy.sell(exectype=bt.Order.Limit, price=price, size=strategy.position.size, tradeid="tp")
+    if not strategy.position:
+        return False
+    if rule.get("exit_type") in ("tp", "stop", "time"):
+        strategy.close()
         return True
-    if rule.get("exit_type") == "stop" and strategy.position:
-        pct = float(params.get("value", 0.007))
-        price = strategy.position.price * (1.0 - pct)
-        strategy.sell(exectype=bt.Order.Stop, price=price, size=strategy.position.size, tradeid="sl")
-        return True
-    if rule.get("exit_type") == "time" and strategy.position:
-        if len(strategy.data) % max(1, int(params.get("bars", 24))) == 0:
-            strategy.close(tradeid="time_exit")
-            return True
     return False
 
 

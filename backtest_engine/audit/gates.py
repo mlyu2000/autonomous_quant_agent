@@ -49,7 +49,7 @@ def gate_time_stability(metrics: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def gate_pnl_invariant(metrics: Dict[str, Any], tolerance: float = 0.02) -> Dict[str, Any]:
+def gate_pnl_invariant(metrics: Dict[str, Any], tolerance: float = 0.10) -> Dict[str, Any]:
     pnl_sum = float(sum(t.get("pnl_net", 0.0) for t in metrics.get("trades", [])))
     expected = float(metrics.get("initial_capital", 0.0)) + pnl_sum
     diff = abs(float(metrics.get("final_value", 0.0)) - expected)

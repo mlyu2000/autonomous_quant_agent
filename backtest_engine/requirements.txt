@@ -1,0 +1,6 @@
+backtrader==1.9.78.123
+numpy==1.26.4
+pandas==2.2.3
+polars==0.20.0
+pyarrow==14.0.2
+pytest==9.1.1
