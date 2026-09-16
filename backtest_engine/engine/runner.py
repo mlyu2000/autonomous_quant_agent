@@ -3,6 +3,16 @@ Backtrader Runner: Executes a generated strategy against historical data.
 
 Handles date range filtering (via Polars), broker setup, analyzer attachment,
 and result collection into the BacktestResult schema.
+
+Execution model (MVP honest):
+  - Pricing: SpreadPandasData — close=mid, high=ask, low=bid (pending-order
+    triggers are evaluated on a conservative spread-widened range).
+  - Commission: fixed per oz (COMM_FIXED) by default, per the data manifest
+    (XAUUSD: $7/lot round turn = $0.035/oz per leg).
+  - Slippage: applied as a fraction, modelling spread-crossing + queue
+    impact on market fills (pipeline passes ~0.05%).
+  - Swap/rollover: charged by the compiled strategy itself (once per trading
+    day a position is held, Wed/Fri triple), per manifest rates.
 """
 import logging
 import math
@@ -13,75 +23,6 @@ import pandas as pd
 import polars as pl
 
 from .custom_analyzers import CriticAnalyzer
-
-
-class SwapObserver(bt.Observer):
-    """
-    Observer that charges swap/rollover on open positions each bar.
-    
-    Swap is charged on weekdays only (Mon-Fri), NOT on weekends.
-    Wednesday: triple swap (Mon+Tue+Wed)
-    Friday: triple swap (Fri+Sat+Sun)
-    
-    Swap rates are per standard lot (100 oz for XAUUSD).
-    For 0.1 lot, swap is divided by 10.
-    """
-    
-    lines = ('swap_charge',)
-    
-    params = (
-        ('swap_rate_long_per_lot', -71.50),  # XAUUSD: per standard lot per night (negative = pay to hold long)
-        ('swap_rate_short_per_lot', 32.50),  # XAUUSD: per standard lot per night (positive = receive on short)
-    )
-    
-    def next(self):
-        """Charge swap on open positions."""
-        # Access data via self.data[0] (standard observer pattern)
-        try:
-            dt = self.data[0].datetime.datetime(0)
-        except (AttributeError, IndexError):
-            return
-
-        weekday = dt.weekday()  # 0=Mon, 5=Sat, 6=Sun
-
-        # No swap on weekends
-        if weekday >= 5:
-            return
-
-        # Calculate swap multiplier
-        if weekday == 2:  # Wednesday - triple
-            multiplier = 3
-        elif weekday == 4:  # Friday - triple
-            multiplier = 3
-        else:  # Mon, Tue, Thu
-            multiplier = 1
-
-        # Check all positions
-        total_swap = 0.0
-        # Use self.strategy or self.owner (both should work in observers)
-        owner = getattr(self, 'strategy', None) or getattr(self, '_owner', None)
-        if owner is None:
-            return
-
-        for data, pos in owner.getpositions():
-            if pos.size == 0:
-                continue
-
-            # Convert position size to lots (1 standard lot = 100 oz for XAUUSD)
-            lots = abs(pos.size) / 100.0
-
-            if pos.size > 0:  # Long position
-                swap_per_lot = self.p.swap_rate_long_per_lot
-            else:  # Short position
-                swap_per_lot = self.p.swap_rate_short_per_lot
-
-            total_swap += lots * swap_per_lot * multiplier
-
-        if total_swap != 0.0:
-            # Deduct swap from broker cash (add positive = receive, add negative = pay)
-            owner.broker.add_cash(total_swap)
-            # Record in line for tracking
-            self.lines.swap_charge[0] = total_swap
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +51,7 @@ def load_and_slice_data(
     data_source: Union[str, pd.DataFrame, pl.DataFrame],
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    spread_total: float = 0.50,
 ) -> pd.DataFrame:
     """
     Load OHLCV data and apply date-range slicing.
@@ -173,12 +115,12 @@ def load_and_slice_data(
     df_pd = df_pd.set_index("datetime")
     df_pd.index.name = None
 
-    # Add spread columns for MT4-style pricing
-    # XAUUSD spread = 50 pips = $0.50 total
-    # Mid = close (we treat close as the mid price)
-    # Ask = mid + 0.25 (half spread)
-    # Bid = mid - 0.25 (half spread)
-    spread_total = 0.50  # 50 pips for XAUUSD
+    # Add spread columns for MT4-style pricing.
+    # The raw close is treated as the MID price:
+    #   ask = mid + half_spread (buys fill here)
+    #   bid = mid - half_spread (sells fill here)
+    # SpreadPandasData maps open/high -> ask and low -> bid so that
+    # pending order triggers are evaluated on a conservative (wider) range.
     half_spread = spread_total / 2.0
     df_pd["mid"] = df_pd["close"]
     df_pd["ask"] = df_pd["close"] + half_spread
@@ -187,19 +129,31 @@ def load_and_slice_data(
     return df_pd
 
 
+TIMEFRAME_BARS_PER_YEAR = {
+    "M1": 6900,   # ~23h x 5d x 60
+    "M5": 1380,
+    "M15": 460,
+    "H1": 1150,
+    "H4": 287,    # ~5.75 bars/day x 50w x 5.2d... use data-derived when available
+    "D1": 260,
+}
+
+
 def run_backtest(
     strategy_class: Type[bt.Strategy],
-    data_class: Type[bt.feeds.PandasData],
-    data_source: Union[str, pd.DataFrame, pl.DataFrame],
+    data_class: Optional[Type[bt.feeds.PandasData]] = None,
+    data_source: Union[str, pd.DataFrame, pl.DataFrame] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     initial_capital: float = 10_000.0,  # MT4 uses $10K initial deposit
-    commission: float = 0.035,  # MT4: $7/lot round turn = $0.035/oz (1 lot = 100 oz)
-    slippage: float = 0.0,
+    commission: float = 0.035,  # XAUUSD: $7/lot round turn = $0.035/oz PER LEG (fixed)
+    slippage: float = 0.0005,  # 5 bps market-fill slippage (queue/spread cross)
+    spread_total: float = 0.50,  # XAUUSD static total spread ($/oz)
     position_sizing: str = 'fixed',
     stake: int = 1,
     coc: bool = False,
-    coo: bool = True,
+    coo: bool = False,
+    swap_enabled: bool = True,
     swap_rate_long_per_lot: float = -71.50,  # XAUUSD: per standard lot per night
     swap_rate_short_per_lot: float = 32.50,  # XAUUSD: per standard lot per night
     warmup_bars: int = 300,
@@ -232,23 +186,30 @@ def run_backtest(
     # Load FULL dataset for indicator warmup (MT4-style).
     # SMA(200) needs 200+ prior bars; EMA(55) needs 55+.
     # Only filter by end_date; start_date is handled by strategy's warmup skip logic.
-    df = load_and_slice_data(data_source, start_date=None, end_date=end_date)
+    df = load_and_slice_data(data_source, start_date=None, end_date=end_date, spread_total=spread_total)
 
     # Record actual data start for reporting
     data_start_date_actual = str(df.index[0])[:10]
     data_end_date_actual = str(df.index[-1])[:10]
 
-    # Data feed
+    # Data feed: default to spread-aware pricing (close=mid, high=ask, low=bid)
+    # so pending-order triggers see a conservative range.
+    if data_class is None:
+        data_class = SpreadPandasData
     data = data_class(dataname=df)
 
     # Cerebro
     cerebro = bt.Cerebro()
     cerebro.adddata(data)
     # Pass start_date and warmup_bars to strategy so it can skip warmup period
+    # (swap/overnight costs are charged by the strategy when enabled).
     cerebro.addstrategy(
         strategy_class,
         start_date=start_date,
         warmup_bars=warmup_bars,
+        swap_enabled=swap_enabled,
+        swap_rate_long_per_lot=swap_rate_long_per_lot,
+        swap_rate_short_per_lot=swap_rate_short_per_lot,
         **strategy_params
     )
 
@@ -263,11 +224,11 @@ def run_backtest(
     # Broker
     cerebro.broker.setcash(initial_capital)
 
-    # Commission scheme: XAUUSD per oz. Use Backtrader's standard
-    # setcommission with leverage so margin = price*size/leverage.
-    # leverage=100 per manifest; mult=1 (1 data unit = 1 oz).
+    # Commission: COMM_FIXED per oz (commission parameter is $/oz per leg).
+    # mult=1 (1 data unit = 1 oz), leverage=100 per manifest.
     cerebro.broker.setcommission(
         commission=commission,
+        commtype=bt.CommissionInfo.COMM_FIXED,
         mult=1.0,
         leverage=100.0,
     )
@@ -309,9 +270,15 @@ def run_backtest(
     # Use manual_trade_log if available, otherwise fall back to critic_trade_log
     trade_log = manual_trade_log if manual_trade_log else critic_trade_log
 
-    # Final portfolio value
-    final_value = cerebro.broker.getvalue()
+    # Final portfolio value: computed from the (net-of-commission-and-swap)
+    # trade log so the PnL invariant (final == initial + sum(pnl_net)) holds
+    # exactly, including the end-of-data marked position. Broker equity is
+    # kept as a cross-check.
+    _log_pnl = sum(float(t.get("pnl_net", 0.0)) for t in trade_log) if trade_log else 0.0
+    final_value = initial_capital + _log_pnl
     final_cash = cerebro.broker.getcash()
+    broker_value = cerebro.broker.getvalue()
+    equity_crosscheck = abs(broker_value - final_value)
 
     # ── Equity safety guard ──────────────────────────────────────────
     # The MVP must never report impossible equity (e.g. from unclosed
@@ -319,16 +286,17 @@ def run_backtest(
     # non-finite or below -initial_capital (i.e. lost more than 100%,
     # which is impossible with the MVP's fixed-lot, no-leverage model),
     # flag it instead of silently returning a wrong number.
+    error_flag = None
     if not math.isfinite(final_value) or final_value < -initial_capital:
         error_flag = "equity_guard_tripped"
         final_value = max(final_value, 0.0)  # do NOT propagate impossible equity
 
-    # Net profit: use broker final value (includes swap charges)
-    # Manual trade log PnL doesn't include swap/rollover, so broker value is more accurate
+    # Net profit from the trade-log-consistent final value.
     net_profit = final_value - initial_capital
     total_return_pct = (net_profit / initial_capital) * 100.0
 
-    # Open position detection
+    # Open position at end of data: if present, it was MARKED in the trade
+    # log (exit_type=end_of_data) and its PnL is already in final_value.
     has_open_position = False
     open_position_value = 0.0
     unrealized_pnl = 0.0
@@ -383,8 +351,14 @@ def run_backtest(
     win_rate = won / closed if closed > 0 else 0.0
 
     # Sharpe ratio — computed manually from per-bar returns (O(n), correct).
-    # Annualized using sqrt(252 * bars_per_year_factor). H4 bars => ~6 bars/day
-    # on a 24h market, so annualization factor = sqrt(252 * 6) = sqrt(1512).
+    # Annualization factor = bars per year, derived from the actual data
+    # span (works for any timeframe, no hard-coded assumptions).
+    try:
+        _span_days = max((df.index[-1] - df.index[0]).total_seconds() / 86400.0, 1e-9)
+    except Exception:
+        _span_days = total_bars / 252.0 if total_bars > 0 else 1.0
+    bars_per_year = (total_bars / _span_days * 365.0) if _span_days > 0 else 252.0
+    ann_factor = math.sqrt(max(bars_per_year, 1.0))
     timereturn = strat.analyzers.timereturn.get_analysis()
     rets = [v for v in timereturn.values() if v is not None]
     sharpe_ratio = None
@@ -393,14 +367,13 @@ def run_backtest(
         var_r = sum((r - mean_r) ** 2 for r in rets) / len(rets)
         std_r = math.sqrt(var_r)
         if std_r > 0:
-            # H4 bars: 6 per day, 252 trading days/year => 1512 bars/year
-            sharpe_ratio = (mean_r / std_r) * math.sqrt(1512.0)
+            sharpe_ratio = (mean_r / std_r) * ann_factor
     sortino_ratio = None
     if sharpe_ratio is not None and max_drawdown_pct > 0 and rets:
         downside = [r for r in rets if r < 0]
         n = len(rets)
         dstd = math.sqrt(sum(r * r for r in downside) / n) if downside else 0.0
-        sortino_ratio = (mean_r / dstd) * math.sqrt(1512.0) if dstd > 0 else None
+        sortino_ratio = (mean_r / dstd) * ann_factor if dstd > 0 else None
 
     # SQN — System Quality Number — computed manually from critic trade log
     # because backtrader's SQN analyzer reports 0 trades when strategies
@@ -477,13 +450,17 @@ def run_backtest(
     except Exception:
         pass
 
-    # Error flag: set if strategy had an open position at end (may indicate
-    # missing exit logic) or if realized return diverges significantly from total
-    error_flag = None
-    if has_open_position and closed > 0:
-        error_flag = "open_position_at_end"
-    elif has_open_position and closed == 0:
+    # Error flags: open position at end is only an error if it was NOT
+    # marked in the trade log (should not happen — stop() marks it).
+    error_flag = error_flag
+    if has_open_position and closed == 0:
         error_flag = "never_closed_any_trade"
+    elif has_open_position and closed > 0 and not any(
+        t.get("exit_type") == "end_of_data" for t in trade_log
+    ):
+        error_flag = "open_position_at_end"
+    if equity_crosscheck > max(1.0, initial_capital * 0.01):
+        error_flag = (error_flag + "+equity_crosscheck" if error_flag else "equity_crosscheck")
 
     return {
         # Portfolio metrics

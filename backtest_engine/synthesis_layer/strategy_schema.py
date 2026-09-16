@@ -13,33 +13,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
+from .grammar import validate_spec_conditions, INDICATOR_NAMES
+
 MECHANISM_CLASSES = {"reversion", "vol_snapback", "trend_momentum", "time_decay"}
 ALLOWED_EXIT_TYPES = {"stop", "tp", "time", "reverse"}
 ALLOWED_SIZING_MODES = {"fixed_lot"}
-ALLOWED_INDICATOR_LOOKUP = {
-    "sma",
-    "ema",
-    "wma",
-    "rsi",
-    "macd",
-    "macd_hist",
-    "stoch",
-    "stoch_rsi",
-    "adx",
-    "atr",
-    "bbands",
-    "donchian",
-    "psar",
-    "vwap",
-    "volume_ratio",
-    "ao",
-    "cci",
-    "mfi",
-    "obv",
-    "line_reg",
-    "higher_high",
-    "lower_low",
-}
+# Single source of truth: the grammar's indicator whitelist. Anything here must
+# be compilable by the engine (enforced by tests/test_indicator_compilability.py).
+# Do NOT add names here that the compiler cannot build — that is fail-open.
+ALLOWED_INDICATOR_LOOKUP = set(INDICATOR_NAMES)
 
 
 class SpecValidationError(Exception):
@@ -139,6 +121,17 @@ class StrategySpec:
         SizingSpec(**self.sizing).validate()
         if not any(rule["exit_type"] in {"stop", "tp"} for rule in self.exit_rules):
             raise SpecValidationError("exit_rules must include at least one stop or tp")
+        # Fail-closed grammar check: every entry condition must parse.
+        raw_dict = {
+            "entry_rules": [
+                {"condition": rule.get("condition", ""), "direction": rule.get("direction", "long")}
+                for rule in self.entry_rules
+            ]
+        }
+        try:
+            validate_spec_conditions(raw_dict)
+        except Exception as exc:
+            raise SpecValidationError(f"entry condition grammar violation: {exc}") from exc
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -156,14 +149,58 @@ class StrategySpec:
         }
 
 
+def _lookback_band(lookback: Any) -> int:
+    """Band lookbacks so parameter-neighbor variants share a thesis key."""
+    try:
+        lb = int(lookback)
+    except (TypeError, ValueError):
+        return 0
+    if lb < 10:
+        return 5
+    if lb < 20:
+        return 10
+    if lb < 40:
+        return 20
+    if lb < 100:
+        return 40
+    return 100
+
+
 def _fingerprint_indicators(indicators: List[Dict[str, Any]]) -> Tuple[str, ...]:
     parts: List[str] = []
     for indicator in indicators:
         name = str(indicator.get("name", ""))
-        lookback = str(indicator.get("lookback", ""))
-        params_key = ",".join(f"{k}={v}" for k, v in sorted(indicator.get("params", {}).items()))
-        parts.append(f"{name}({lookback})[{params_key}]")
+        lookback = indicator.get("lookback", 20)
+        parts.append(f"{name}~{_lookback_band(lookback)}")
     return tuple(parts)
+
+
+def _entry_condition_fingerprint(entry_rules: List[Dict[str, Any]]) -> Tuple[str, ...]:
+    parts: List[str] = []
+    for rule in entry_rules:
+        cond = str(rule.get("condition", "")).strip().lower()
+        if cond:
+            parts.append(cond)
+    return tuple(sorted(parts))
+
+
+def dedupe_key(spec: StrategySpec) -> Tuple[str, Tuple[str, ...], str]:
+    """Thesis key = mechanism class + indicator CORE (names, banded) + direction.
+
+    Per the project definition: dedupe by mechanism class + indicator core +
+    direction. Parameter neighbors (lookback within a band, TP/SL values) and
+    threshold variants of the same indicator core are the SAME thesis and are
+    collapsed. A different indicator core or direction is a distinct thesis.
+    """
+    # Indicator core: (name, lookback-band) per indicator, order-insensitive.
+    # The band collapses lookback noise (14 vs 15) but keeps genuinely
+    # different horizons distinct (rsi(14) core vs rsi(50) core).
+    core = tuple(sorted(_fingerprint_indicators(spec.indicators)))
+    return (
+        spec.mechanism_class,
+        core,
+        _entry_direction(spec.entry_rules),
+    )
 
 
 def _entry_direction(entry_rules: List[Dict[str, Any]]) -> str:
@@ -197,14 +234,6 @@ def validate_spec(raw: Dict[str, Any]) -> StrategySpec:
     spec = normalize_spec(raw)
     spec.validate()
     return spec
-
-
-def dedupe_key(spec: StrategySpec) -> Tuple[str, Tuple[str, ...], str]:
-    return (
-        spec.mechanism_class,
-        _fingerprint_indicators(spec.indicators),
-        _entry_direction(spec.entry_rules),
-    )
 
 
 def is_duplicate(a: StrategySpec, b: StrategySpec) -> bool:

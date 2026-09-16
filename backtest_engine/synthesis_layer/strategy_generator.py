@@ -24,19 +24,23 @@ from .strategy_schema import (
     is_duplicate,
     write_spec,
 )
+from .grammar import ConditionParseError
 
 
-PROJECT_ROOT = Path("/home/ml/projects/autonomous_quant_agent")
-SIMULATED_STRATEGIES_DIR = PROJECT_ROOT / "backtest_engine/simulated_strategies"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+# Templates emit conditions in the shared grammar (synthesis_layer/grammar.py).
+# Each entry condition must parse; validate_spec rejects anything else
+# (fail-closed). Indicator references in conditions must be declared in the
+# template's `indicators` list with matching lookback.
 MECHANISM_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
     "reversion": [
         {
             "base_name": "rsi_mean_reversion",
             "indicators": [{"name": "rsi", "lookback": 14, "shift": 1, "params": {}}],
             "entry_rules": [
-                {"direction": "long", "condition": "rsi < 30"},
-                {"direction": "short", "condition": "rsi > 70"},
+                {"direction": "long", "condition": "rsi(14) < 30"},
+                {"direction": "short", "condition": "rsi(14) > 70"},
             ],
             "exit_rules": [
                 {"exit_type": "tp", "params": {"mode": "percent", "value": 0.01}},
@@ -47,8 +51,52 @@ MECHANISM_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
             "base_name": "bb_reversion",
             "indicators": [{"name": "bbands", "lookback": 20, "shift": 1, "params": {"dev": 2.0}}],
             "entry_rules": [
-                {"direction": "long", "condition": "close < bbands.lower"},
-                {"direction": "short", "condition": "close > bbands.upper"},
+                {"direction": "long", "condition": "close < bbands.bot"},
+                {"direction": "short", "condition": "close > bbands.top"},
+            ],
+            "exit_rules": [
+                {"exit_type": "tp", "params": {"mode": "percent", "value": 0.01}},
+                {"exit_type": "stop", "params": {"mode": "percent", "value": 0.007}},
+            ],
+        },
+        {
+            "base_name": "rsi_bb_reversion",
+            "indicators": [
+                {"name": "rsi", "lookback": 14, "shift": 1, "params": {}},
+                {"name": "bbands", "lookback": 20, "shift": 1, "params": {"dev": 2.0}},
+            ],
+            "entry_rules": [
+                {"direction": "long", "condition": "rsi(14) < 35 and close < bbands.bot"},
+                {"direction": "short", "condition": "rsi(14) > 65 and close > bbands.top"},
+            ],
+            "exit_rules": [
+                {"exit_type": "tp", "params": {"mode": "percent", "value": 0.012}},
+                {"exit_type": "stop", "params": {"mode": "percent", "value": 0.008}},
+            ],
+        },
+    ],
+    "vol_snapback": [
+        {
+            "base_name": "rsi_vol_snapback",
+            "indicators": [
+                {"name": "rsi", "lookback": 14, "shift": 1, "params": {}},
+                {"name": "volume_ratio", "lookback": 20, "shift": 1, "params": {}},
+            ],
+            "entry_rules": [
+                {"direction": "long", "condition": "rsi(14) < 35 and volume_ratio(20) > 2.0"},
+                {"direction": "short", "condition": "rsi(14) > 65 and volume_ratio(20) > 2.0"},
+            ],
+            "exit_rules": [
+                {"exit_type": "tp", "params": {"mode": "percent", "value": 0.01}},
+                {"exit_type": "stop", "params": {"mode": "percent", "value": 0.006}},
+            ],
+        },
+        {
+            "base_name": "stoch_reversion",
+            "indicators": [{"name": "stoch_k", "lookback": 14, "shift": 1, "params": {}}],
+            "entry_rules": [
+                {"direction": "long", "condition": "stoch_k(14) < 20"},
+                {"direction": "short", "condition": "stoch_k(14) > 80"},
             ],
             "exit_rules": [
                 {"exit_type": "tp", "params": {"mode": "percent", "value": 0.01}},
@@ -56,32 +104,16 @@ MECHANISM_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
             ],
         },
     ],
-    "vol_snapback": [
-        {
-            "base_name": "atr_volatility",
-            "indicators": [
-                {"name": "atr", "lookback": 14, "shift": 1, "params": {}},
-                {"name": "rsi", "lookback": 14, "shift": 1, "params": {}},
-            ],
-            "entry_rules": [
-                {"direction": "long", "condition": "atr_snaps_low and rsi < 40"},
-            ],
-            "exit_rules": [
-                {"exit_type": "tp", "params": {"mode": "atr", "value": 2.0}},
-                {"exit_type": "stop", "params": {"mode": "atr", "value": 1.0}},
-            ],
-        }
-    ],
     "trend_momentum": [
         {
-            "base_name": "trend_momentum_sma_filter",
+            "base_name": "trend_momentum_sma_macd",
             "indicators": [
                 {"name": "sma", "lookback": 50, "shift": 1, "params": {}},
                 {"name": "macd_hist", "lookback": 26, "shift": 1, "params": {}},
             ],
             "entry_rules": [
-                {"direction": "long", "condition": "close > sma and macd_hist turns positive"},
-                {"direction": "short", "condition": "close < sma and macd_hist turns negative"},
+                {"direction": "long", "condition": "close > sma(50) and macd_hist > 0"},
+                {"direction": "short", "condition": "close < sma(50) and macd_hist < 0"},
             ],
             "exit_rules": [
                 {"exit_type": "tp", "params": {"mode": "percent", "value": 0.015}},
@@ -89,14 +121,41 @@ MECHANISM_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
             ],
         },
         {
-            "base_name": "ema_ribbon_trend",
+            "base_name": "ema_trend",
             "indicators": [{"name": "ema", "lookback": 20, "shift": 1, "params": {}}],
             "entry_rules": [
-                {"direction": "long", "condition": "close > ema"},
+                {"direction": "long", "condition": "close > ema(20)"},
+                {"direction": "short", "condition": "close < ema(20)"},
             ],
             "exit_rules": [
                 {"exit_type": "tp", "params": {"mode": "percent", "value": 0.012}},
                 {"exit_type": "stop", "params": {"mode": "percent", "value": 0.006}},
+            ],
+        },
+        {
+            "base_name": "donchian_breakout",
+            "indicators": [{"name": "donchian", "lookback": 20, "shift": 1, "params": {}}],
+            "entry_rules": [
+                {"direction": "long", "condition": "close > donchian.mid"},
+                {"direction": "short", "condition": "close < donchian.mid"},
+            ],
+            "exit_rules": [
+                {"exit_type": "tp", "params": {"mode": "percent", "value": 0.015}},
+                {"exit_type": "stop", "params": {"mode": "percent", "value": 0.009}},
+            ],
+        },
+        {
+            "base_name": "adx_trend",
+            "indicators": [
+                {"name": "sma", "lookback": 50, "shift": 1, "params": {}},
+                {"name": "adx", "lookback": 14, "shift": 1, "params": {}},
+            ],
+            "entry_rules": [
+                {"direction": "long", "condition": "close > sma(50) and adx(14) > 25"},
+            ],
+            "exit_rules": [
+                {"exit_type": "tp", "params": {"mode": "percent", "value": 0.02}},
+                {"exit_type": "stop", "params": {"mode": "percent", "value": 0.01}},
             ],
         },
     ],
@@ -105,13 +164,14 @@ MECHANISM_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
             "base_name": "time_decay_exit",
             "indicators": [{"name": "sma", "lookback": 20, "shift": 1, "params": {}}],
             "entry_rules": [
-                {"direction": "long", "condition": "close > sma"},
+                {"direction": "long", "condition": "close > sma(20)"},
+                {"direction": "short", "condition": "close < sma(20)"},
             ],
             "exit_rules": [
                 {"exit_type": "time", "params": {"bars": 24}},
                 {"exit_type": "tp", "params": {"mode": "percent", "value": 0.01}},
             ],
-        }
+        },
     ],
 }
 
@@ -234,17 +294,18 @@ def build_spec_raw(
 def generate_specs(count: int, out_dir: Path) -> List[StrategySpec]:
     out_dir.mkdir(parents=True, exist_ok=True)
     specs: List[StrategySpec] = []
-    seen_keys: Set[Tuple[str, Tuple[str, ...], str]] = set()
+    seen_keys = set()
     rng = random.Random(20260725)
 
     class_counts: Dict[str, int] = {name: 0 for name in MECHANISM_CLASSES}
     generated = 0
     attempts = 0
+    max_attempts = count * 60  # dedupe can reject many candidates
 
-    while generated < count and attempts < count * 12:
+    while generated < count and attempts < max_attempts:
         attempts += 1
         mechanism_class = rng.choice(sorted(MECHANISM_CLASSES))
-        mutate = generated > 8
+        mutate = generated > 8  # mutate after the base population exists
         raw = build_spec_raw(mechanism_class, generated, mutate=mutate, rng=rng)
         try:
             spec = validate_spec(raw)
@@ -259,31 +320,10 @@ def generate_specs(count: int, out_dir: Path) -> List[StrategySpec]:
         specs.append(spec)
         generated += 1
 
-    immigrant_candidates = sorted(SIMULATED_STRATEGIES_DIR.glob("*.py"))
-    injected = 0
-    while injected < min(4, count // 10 + 1) and immigrant_candidates and generated < count:
-        source_file = immigrant_candidates[injected % len(immigrant_candidates)]
-        raw = build_spec_raw(
-            sorted(MECHANISM_CLASSES)[injected % len(MECHANISM_CLASSES)],
-            generated,
-            source_file=str(source_file),
-            mutate=False,
-            rng=rng,
+    if generated < count:
+        import logging
+        logging.getLogger(__name__).warning(
+            "generate_specs: requested %d, produced %d (distinct-thesis pool exhausted "
+            "after %d attempts)", count, generated, attempts,
         )
-        try:
-            spec = validate_spec(raw)
-        except Exception:
-            injected += 1
-            continue
-        key = dedupe_key(spec)
-        if key in seen_keys:
-            injected += 1
-            continue
-        seen_keys.add(key)
-        class_counts[spec.mechanism_class] += 1
-        write_spec(spec, out_dir)
-        specs.append(spec)
-        generated += 1
-        injected += 1
-
     return specs

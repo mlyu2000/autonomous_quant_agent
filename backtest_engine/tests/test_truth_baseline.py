@@ -120,7 +120,10 @@ def test_open_position_at_end_does_not_crash(parquet_path: str):
     assert "error_flag" in metrics
     assert math.isfinite(metrics["final_value"])
     assert metrics["final_value"] >= 0.0
-    assert metrics["error_flag"] in ("open_position_at_end", "never_closed_any_trade")
+    # Base flag is an open-position-at-end condition; the runner may append
+    # a secondary "+equity_crosscheck" annotation, so compare the base part.
+    base_flag = (metrics["error_flag"] or "").split("+")[0]
+    assert base_flag in ("open_position_at_end", "never_closed_any_trade")
     assert metrics["has_open_position"] is True
 
 
