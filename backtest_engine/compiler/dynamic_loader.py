@@ -62,25 +62,40 @@ def _ind(module: Any, name: str, period: int, params: Dict[str, Any]) -> Any:
         )
         return macd.lines.macd - macd.lines.signal
     if name == "stoch":
+        # backtrader Stochastic exposes its K line as `percK` (not `k`).
         st = bt.indicators.Stochastic(
             module.data, period=period,
             period_dfast=int(params.get("dfast", 3)),
             period_dslow=int(params.get("dslow", 3)),
         )
-        return st.lines.k
+        return st.lines.percK
     if name == "stoch_k":
         st = bt.indicators.Stochastic(
             module.data, period=period,
             period_dfast=int(params.get("dfast", 3)),
             period_dslow=int(params.get("dslow", 3)),
         )
-        return st.lines.k
+        return st.lines.percK
     if name == "stoch_rsi":
-        return bt.indicators.StochasticRSI(
-            module.data, period=period,
-            period_dfast=int(params.get("dfast", 3)),
-            period_dslow=int(params.get("dslow", 3)),
-        )
+        # backtrader 1.9.78.123 has no built-in StochasticRSI. StochRSI is
+        # the Stochastic oscillator applied to the RSI:
+        #   (RSI - lowest_RSI(N)) / (highest_RSI(N) - lowest_RSI(N)) * 100
+        class _StochRSI(bt.Indicator):
+            lines = ("stoch_rsi",)
+            params = (("period", 14), ("stoch_period", 14))
+
+            def __init__(self):
+                self._rsi = bt.indicators.RSI(self.data, period=self.p.period)
+                self._hi = bt.indicators.Highest(self._rsi, period=self.p.stoch_period)
+                self._lo = bt.indicators.Lowest(self._rsi, period=self.p.stoch_period)
+
+            def next(self):
+                rng = self._hi[0] - self._lo[0]
+                self.stoch_rsi[0] = (
+                    (self._rsi[0] - self._lo[0]) / rng * 100.0 if rng > 0 else 0.0
+                )
+
+        return _StochRSI(module.data, period=period)
     if name == "adx":
         return bt.indicators.ADX(module.data, period=period, **params)
     if name == "atr":
@@ -89,19 +104,77 @@ def _ind(module: Any, name: str, period: int, params: Dict[str, Any]) -> Any:
         dev = float(params.get("dev", 2.0))
         return bt.indicators.BollingerBands(module.data, period=period, devfactor=dev)
     if name == "donchian":
-        return bt.indicators.DonchianChannels(module.data, period=period, **params)
+        # backtrader 1.9.78.123 has NO DonchianChannels indicator. Build a
+        # rolling Donchian channel exposing upper/mid/lower lines so the
+        # grammar's donchian.mid/upper/lower tokens resolve.
+        class _Donchian(bt.Indicator):
+            lines = ("upper", "mid", "lower")
+            params = (("period", 20),)
+
+            def __init__(self):
+                self._hi = bt.indicators.Highest(self.data.high, period=self.p.period)
+                self._lo = bt.indicators.Lowest(self.data.low, period=self.p.period)
+
+            def next(self):
+                self.upper[0] = self._hi[0]
+                self.lower[0] = self._lo[0]
+                self.mid[0] = (self._hi[0] + self._lo[0]) / 2.0
+
+        return _Donchian(module.data, period=period)
     if name == "psar":
         return bt.indicators.ParabolicSAR(module.data, **params)
     if name == "ao":
         fast = int(params.get("fast", 5))
         slow = int(params.get("slow", 34))
-        return bt.indicators.EMA(module.data.hl2(period=1), period=fast) - bt.indicators.EMA(module.data.hl2(period=1), period=slow)
+        hl2 = (module.data.high + module.data.low) / 2.0
+        return bt.indicators.EMA(hl2, period=fast) - bt.indicators.EMA(hl2, period=slow)
     if name == "cci":
         return bt.indicators.CCI(module.data, period=period, **params)
     if name == "mfi":
-        return bt.indicators.MoneyFlowIndex(module.data, period=period, **params)
+        # backtrader 1.9.78.123 has no built-in MoneyFlowIndex.
+        # MFI = 100 - 100/(1 + ratio) where ratio = sum(+MF)/sum(-MF) over
+        # `period` bars, MF = typical_price * volume signed by price change.
+        class _MFI(bt.Indicator):
+            lines = ("mfi",)
+            params = (("period", 14),)
+
+            def __init__(self):
+                tp = (self.data.high + self.data.low + self.data.close) / 3.0
+                tp_prev = tp(-1)
+                raw = tp * self.data.volume
+                self._plus = raw * (tp > tp_prev)
+                self._minus = raw * (tp < tp_prev)
+                self._sum_plus = bt.indicators.SMA(self._plus, period=self.p.period)
+                self._sum_minus = bt.indicators.SMA(self._minus, period=self.p.period)
+
+            def next(self):
+                sp = self._sum_plus[0]
+                sm = self._sum_minus[0]
+                ratio = sp / sm if sm > 0 else 0.0
+                self.mfi[0] = 100.0 - (100.0 / (1.0 + ratio))
+
+        return _MFI(module.data, period=period)
     if name == "obv":
-        return bt.indicators.OnBalanceVolume(module.data)
+        # backtrader 1.9.78.123 has no built-in OnBalanceVolume.
+        # OBV is a running sum: +volume on up-close, -volume on down-close.
+        class _OBV(bt.Indicator):
+            lines = ("obv",)
+            params = ()
+
+            def __init__(self):
+                self._acc = 0.0
+
+            def next(self):
+                c = self.data.close[0]
+                pc = self.data.close[-1]
+                v = self.data.volume[0]
+                if c > pc:
+                    self._acc += v
+                elif c < pc:
+                    self._acc -= v
+                self.obv[0] = self._acc
+
+        return _OBV(module.data)
     if name == "vwap":
         # backtrader has no built-in VWAP. Use a rolling
         # sum(typical_price * volume) / sum(volume) over `period` bars.
@@ -203,6 +276,7 @@ def build_strategy_class(spec: Dict[str, Any]) -> Type[bt.Strategy]:
             self._entry_price = 0.0
             self._entry_date = None
             self._bars_held = 0
+            self._entry_comm = 0.0
             # Swap/rollover accounting (charged once per trading day held,
             # Wed/Fri triple, per manifest rates; 1 lot = 100 oz).
             self._swap_day: Optional[Any] = None
@@ -370,7 +444,10 @@ def build_strategy_class(spec: Dict[str, Any]) -> Type[bt.Strategy]:
             ref = order.ref
             if order.status == order.Completed:
                 if ref == self._entry_ref and self._entry_ref is not None:
-                    # Entry filled: place real TP/SL this bar.
+                    # Entry filled: record the entry-leg commission (the
+                    # broker charges a commission on BOTH legs), place real
+                    # TP/SL this bar.
+                    self._entry_comm = order.executed.comm if order is not None else 0.0
                     self._entry_order = None
                     self._entry_ref = None
                     self._entry_price = order.executed.price
@@ -409,22 +486,33 @@ def build_strategy_class(spec: Dict[str, Any]) -> Type[bt.Strategy]:
                 pnl_gross = (entry_price - exit_price) * size
             comm = order.executed.comm if order is not None else 0.0
             swap = self._swap_for_trade  # negative = cost paid
-            pnl_net = pnl_gross - comm + swap
+            # Broker charges commission on BOTH legs (entry + exit). The
+            # exit order's comm is the exit leg; add the entry leg recorded
+            # at entry fill so per-trade commission reflects true cost.
+            commission_total = comm + getattr(self, "_entry_comm", 0.0)
+            pnl_net = pnl_gross - commission_total + swap
             trade_value = abs(entry_price * size)
             pnl_pct = (pnl_net / trade_value * 100.0) if trade_value else 0.0
-            mafe = (self._lowest - entry_price) * size if side > 0 else (entry_price - self._highest) * size
-            mfe = (self._highest - entry_price) * size if side > 0 else (entry_price - self._lowest) * size
+            # MAFE = worst adverse excursion (positive magnitude);
+            # MFE = best favorable excursion (positive magnitude).
+            if side > 0:
+                mafe = max(entry_price - self._lowest, 0.0) * size
+                mfe = max(self._highest - entry_price, 0.0) * size
+            else:
+                mafe = max(self._highest - entry_price, 0.0) * size
+                mfe = max(entry_price - self._lowest, 0.0) * size
             self.manual_trade_log.append({
                 "entry_date": self._entry_date,
                 "exit_date": str(self.data.datetime.date(0)),
                 "entry_price": round(entry_price, 4),
                 "exit_price": round(exit_price, 4),
                 "trade_size": size,
+                "direction": "long" if side > 0 else "short",
                 "exit_type": reason,
                 "pnl_gross": round(pnl_gross, 4),
                 "pnl_net": round(pnl_net, 4),
                 "pnl_percent": round(pnl_pct, 4),
-                "commission_paid": round(comm, 4),
+                "commission_paid": round(commission_total, 4),
                 "swap_paid": round(swap, 4),
                 "bars_held": self._bars_held,
                 "mafe": round(mafe, 4),
@@ -437,6 +525,7 @@ def build_strategy_class(spec: Dict[str, Any]) -> Type[bt.Strategy]:
             self._bars_held = 0
             self._swap_for_trade = 0.0
             self._swap_day = None
+            self._entry_comm = 0.0
             self._entry_order = None
             self._entry_ref = None
             self._tp_order = None
@@ -448,7 +537,13 @@ def build_strategy_class(spec: Dict[str, Any]) -> Type[bt.Strategy]:
 
         def stop(self):
             """End of data: any open position is marked to the final close
-            (realized for reporting; no bar remains to fill a market order)."""
+            (realized for reporting; no bar remains to fill a market order).
+            Swap and both-leg commission are included so the EOD trade has
+            the same schema as every other trade."""
+            # Cancel any surviving pending orders (TP/SL/close).
+            self._cancel_held(self._tp_order, "tp")
+            self._cancel_held(self._sl_order, "sl")
+            self._cancel_held(self._close_order, "close")
             if self.position.size != 0:
                 final_close = float(self.data.close[0])
                 entry_price = self._entry_price
@@ -458,19 +553,32 @@ def build_strategy_class(spec: Dict[str, Any]) -> Type[bt.Strategy]:
                     pnl_gross = (final_close - entry_price) * size
                 else:
                     pnl_gross = (entry_price - final_close) * size
-                mafe = (self._lowest - entry_price) * size if side > 0 else (entry_price - self._highest) * size
-                mfe = (self._highest - entry_price) * size if side > 0 else (entry_price - self._lowest) * size
+                # No exit order at EOD, so the exit leg is not charged by the
+                # broker; charge only the entry leg for honest accounting.
+                commission_total = getattr(self, "_entry_comm", 0.0)
+                swap = self._swap_for_trade
+                pnl_net = pnl_gross - commission_total + swap
+                # MAFE = worst adverse excursion (positive magnitude);
+                # MFE = best favorable excursion (positive magnitude).
+                if side > 0:
+                    mafe = max(entry_price - self._lowest, 0.0) * size
+                    mfe = max(self._highest - entry_price, 0.0) * size
+                else:
+                    mafe = max(self._highest - entry_price, 0.0) * size
+                    mfe = max(entry_price - self._lowest, 0.0) * size
                 self.manual_trade_log.append({
                     "entry_date": self._entry_date,
                     "exit_date": str(self.data.datetime.date(0)),
                     "entry_price": round(entry_price, 4),
                     "exit_price": round(final_close, 4),
                     "trade_size": size,
+                    "direction": "long" if side > 0 else "short",
                     "exit_type": "end_of_data",
                     "pnl_gross": round(pnl_gross, 4),
-                    "pnl_net": round(pnl_gross, 4),
-                    "pnl_percent": round((pnl_gross / abs(entry_price * size) * 100.0) if entry_price * size else 0.0, 4),
-                    "commission_paid": 0.0,
+                    "pnl_net": round(pnl_net, 4),
+                    "pnl_percent": round((pnl_net / abs(entry_price * size) * 100.0) if entry_price * size else 0.0, 4),
+                    "commission_paid": round(commission_total, 4),
+                    "swap_paid": round(swap, 4),
                     "bars_held": self._bars_held,
                     "mafe": round(mafe, 4),
                     "mfe": round(mfe, 4),

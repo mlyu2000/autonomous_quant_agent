@@ -43,7 +43,7 @@ autonomous_quant_agent/
 │   ├── data/manifest.json         # frozen data contract (costs, spread, swap,
 │   │                               #   leverage, periods)
 │   ├── data_lake/                 # FROZEN XAUUSD M1/M15/H1/H4/D1 parquet
-│   ├── tests/                     # 31 tests (truth baseline, generator, gates,
+│   ├── tests/                     # 34 tests (truth baseline, generator, gates,
 │   │                               #   indicator compilability)
 │   └── requirements.txt
 └── knowledge_base/                 # YouTube -> Neo4j -> synthesis (first-class)
@@ -168,14 +168,15 @@ code path that turns a graph `Strategy` into a runnable spec:
 
 ```bash
 cd backtest_engine
-./venv/bin/python -m pytest tests/ -q   # 31 tests
+./venv/bin/python -m pytest tests/ -q   # 34 tests
 ```
 
 Covers: truth-baseline equity math, generator dedupe (distinct theses only),
-audit gates (pnl-invariant catches real discrepancies, outlier resistance
-blocks single-trade results, time-stability uses real trade dates), and
-indicator compilability (every grammar-whitelisted indicator compiles — the
-regression guard for grammar/compiler drift).
+audit gates (the PnL-invariant now reconciles two INDEPENDENT sources — the
+broker balance-sheet value vs the per-trade log — and is a real check, not a
+tautology; outlier resistance blocks single-trade results; time-stability uses
+real trade dates), and indicator compilability (every grammar-whitelisted
+indicator compiles AND runs — the regression guard for grammar/compiler drift).
 
 ## Known limitations / honesty notes
 

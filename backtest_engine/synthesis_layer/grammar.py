@@ -55,7 +55,7 @@ LINE_INDICATORS = {
 }
 
 # Indicators that expose band lines rather than a single line.
-BAND_INDICATORS = {"bbands": ("top", "bot"), "donchian": ("mid",)}
+BAND_INDICATORS = {"bbands": ("top", "bot"), "donchian": ("mid", "upper", "lower")}
 
 DEFAULT_PERIOD = {
     "sma": 20, "ema": 20, "wma": 20, "rsi": 14, "macd": 26, "macd_hist": 26,
@@ -83,9 +83,9 @@ def _parse_value(tok: str) -> Dict[str, Any]:
     m = re.match(r"^bbands\.(top|bot)$", tok)
     if m:
         return {"kind": "band", "host": "bbands", "line": m.group(1)}
-    m = re.match(r"^donchian\.mid$", tok)
+    m = re.match(r"^donchian\.(mid|upper|lower)$", tok)
     if m:
-        return {"kind": "band", "host": "donchian", "line": "mid"}
+        return {"kind": "band", "host": "donchian", "line": m.group(1)}
     m = re.match(r"^(?P<name>[a-z_][a-z0-9_]*)\((?P<period>\d+)\)$", tok)
     if m:
         name = m.group("name")

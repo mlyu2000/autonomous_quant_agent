@@ -37,6 +37,10 @@ def _base_metrics(**overrides):
     m = {
         "initial_capital": 10000.0,
         "final_value": 15000.0,
+        # Independent balance-sheet figure; for a fully closed, consistent
+        # run it equals the log PnL sum (initial + sum(pnl_net)) = 15000.
+        "broker_final_value": 15000.0,
+        "has_open_position": False,
         "net_profit": 5000.0,
         "total_trades": 25,
         "profit_factor": 1.6,
@@ -68,9 +72,25 @@ def test_pnl_invariant_pass_when_consistent():
 
 
 def test_pnl_invariant_fail_on_real_discrepancy():
-    # final_value disagrees with trade PnL by $500 => real bug caught
-    res = gate_pnl_invariant(_base_metrics(final_value=15500.0))
+    # The INDEPENDENT broker value disagrees with the trade-log PnL by $500
+    # => a genuine accounting bug is caught.
+    res = gate_pnl_invariant(_base_metrics(broker_final_value=15500.0))
     assert res["status"] == "FAIL"
+
+
+def test_pnl_invariant_pass_reconciles_two_independent_sources():
+    # final_value is derived from the log PnL sum; broker_final_value is the
+    # independent balance-sheet figure. When they agree, the gate passes —
+    # this is a real cross-check, not a tautology.
+    assert gate_pnl_invariant(_base_metrics())["status"] == "PASS"
+
+
+def test_pnl_invariant_inconclusive_when_no_broker_value():
+    # No independent source to reconcile against => INCONCLUSIVE, not a
+    # silent pass and not a false FAIL.
+    m = _base_metrics()
+    m.pop("broker_final_value", None)
+    assert gate_pnl_invariant(m)["status"] == "INCONCLUSIVE"
 
 
 # ---- gate_outlier_resistance -----------------------------------------------
@@ -182,5 +202,7 @@ def test_evaluate_inconclusive_when_no_fail_but_insufficient():
 
 
 def test_evaluate_fail_when_any_gate_fails():
-    r = evaluate(_base_metrics(final_value=16000.0))  # pnl invariant fail
+    # Independent broker value diverges from the trade-log PnL => invariant
+    # gate FAILs => overall verdict FAIL.
+    r = evaluate(_base_metrics(broker_final_value=16000.0))
     assert r["status"] == "FAIL"

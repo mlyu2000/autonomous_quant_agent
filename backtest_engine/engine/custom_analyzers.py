@@ -57,13 +57,21 @@ class CriticAnalyzer(bt.Analyzer):
             pass
 
     def notify_trade(self, trade):
-        """Finalize a closed trade (trade.status == Closed)."""
+        """Finalize a closed trade (trade.status == Closed).
+
+        When a trade fully closes, ``trade.size`` is 0, so the trade's size
+        and direction must come from the entry leg captured in
+        ``notify_order`` (``self._entry_size``, which is signed: +buy / -sell),
+        not from ``trade.size``.
+        """
         if trade.status != bt.Trade.Closed:
             return
 
         entry_price = self._entry_price if self._entry_price is not None else trade.price
         exit_price = self._exit_price if self._exit_price is not None else trade.price
-        size = abs(trade.size) if trade.size else 0
+        # A fully closed trade has trade.size == 0; use the captured entry size.
+        size = abs(self._entry_size) if self._entry_size else (abs(trade.size) if trade.size else 0)
+        is_long = bool(self._entry_size and self._entry_size > 0)
 
         # Fallback if per-leg capture missed (should be rare).
         if entry_price is None or exit_price is None or size == 0:
@@ -76,16 +84,17 @@ class CriticAnalyzer(bt.Analyzer):
         pnl_gross = trade.pnl
         pnl_pct = (pnl_net / trade_value * 100.0) if trade_value else 0.0
 
-        # MAFE/MFE — direction-aware, from the tracked price excursion.
+        # MAFE/MFE — direction-aware, positive magnitude, from the tracked
+        # price excursion (consistent with the compiled-strategy convention).
         mafe = 0.0
         mfe = 0.0
         if self._highest_price is not None and self._lowest_price is not None:
-            if size > 0 and (trade.size or 0) > 0:  # long
-                mafe = self._lowest_price - entry_price
-                mfe = self._highest_price - entry_price
+            if is_long:
+                mafe = max(entry_price - self._lowest_price, 0.0)
+                mfe = max(self._highest_price - entry_price, 0.0)
             else:  # short
-                mafe = entry_price - self._highest_price
-                mfe = entry_price - self._lowest_price
+                mafe = max(self._highest_price - entry_price, 0.0)
+                mfe = max(entry_price - self._lowest_price, 0.0)
 
         self.trades.append({
             "entry_date": str(self._entry_date) if self._entry_date else None,

@@ -53,3 +53,40 @@ def test_every_grammar_indicator_compiles():
         spec = _spec_for(name)
         validate_spec(spec)          # must pass validation
         compile_spec(spec)           # must build a runnable strategy
+
+
+def test_every_grammar_indicator_runs():
+    """Regression guard: every whitelisted indicator must not only COMPILE but
+    actually INSTANTIATE and RUN without crashing. This is what catches the
+    donchian/VWAP-class bug where a valid spec blows up mid-run because the
+    compiler called a non-existent indicator. compile_spec() only builds the
+    class; the indicators are constructed inside the strategy __init__ (run
+    time), so a compile-only check is not sufficient."""
+    import backtrader as bt
+    import pandas as pd
+
+    data = Path(PROJECT_ROOT / "backtest_engine/data_lake/XAUUSD_H4.parquet")
+    df = pd.read_parquet(data)
+    # Keep the run fast: a short slice, but long enough for period-20
+    # indicators to warm up.
+    df = df.iloc[:200].copy()
+
+    from engine.runner import run_backtest
+
+    for name in INDICATOR_NAMES:
+        spec = _spec_for(name)
+        try:
+            run_backtest(
+                strategy_class=compile_spec(spec),
+                data_source=df,
+                start_date="2006-01-01",
+                end_date="2006-06-30",
+                initial_capital=10_000.0,
+                commission=0.035,
+                warmup_bars=50,
+            )
+        except Exception as exc:  # noqa: BLE001 - must surface the crash
+            raise AssertionError(
+                f"indicator '{name}' failed to RUN (a valid spec crashed "
+                f"mid-backtest): {type(exc).__name__}: {exc}"
+            ) from exc
