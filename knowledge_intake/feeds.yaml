@@ -1,0 +1,14 @@
+# Default internet sources for knowledge intake (knowledge_intake/intake.py).
+# RSS feeds are the reliable "continuous" web source (no CAPTCHA/Cloudflare).
+# Add/remove freely — intake re-reads this file every cycle.
+#
+# Each entry: {"url": <rss>, "topic": <hint for the extractor>}
+feeds:
+  - url: "https://cointelegraph.com/rss"
+    topic: "crypto trading"
+  - url: "https://cryptopotato.com/feed/"
+    topic: "crypto trading"
+  - url: "https://coinpaper.com/feed"
+    topic: "crypto trading"
+  - url: "https://www.dailyforex.com/feed/"
+    topic: "forex trading"

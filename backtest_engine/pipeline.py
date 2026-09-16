@@ -124,6 +124,22 @@ def generate_kb(args: argparse.Namespace) -> int:
     return 0
 
 
+def intake(args: argparse.Namespace) -> int:
+    """Run ONE continuous-knowledge-intake cycle (internet RSS or LLM model)
+    and store the extracted strategies into the Neo4j knowledge graph. The
+    continuous background daemon is a separate process (see knowledge_intake/
+    README); this is the single-cycle entrypoint the control plane triggers."""
+    import subprocess
+    intake_script = PROJECT_ROOT / "knowledge_intake" / "intake.py"
+    venv_python = PROJECT_ROOT / "backtest_engine" / "venv" / "bin" / "python"
+    cmd = [str(venv_python), str(intake_script),
+           "--once", "--source", args.source,
+           "--limit-per-feed", str(args.limit_per_feed),
+           "--count", str(args.count)]
+    proc = subprocess.run(cmd)
+    return proc.returncode
+
+
 def _load_evolved_genome():
     """Load the current baseline genome (the auto-applied LOW-risk
     improvement), or None if no evolution has run yet."""
@@ -353,6 +369,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     sub.add_parser("audit-json")
 
+    intake_parser = sub.add_parser("intake", help="one continuous-knowledge cycle (internet RSS or LLM) -> Neo4j")
+    intake_parser.add_argument("--source", default="all", choices=["internet", "llm", "all"])
+    intake_parser.add_argument("--limit-per-feed", type=int, default=4)
+    intake_parser.add_argument("--count", type=int, default=3)
+
     serve = sub.add_parser("serve", help="run the control-plane UI + API server")
     serve.add_argument("--port", type=int, default=8050)
     serve.add_argument("--host", default="127.0.0.1")
@@ -366,6 +387,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return evolve(args)
     if args.command == "generate-kb":
         return generate_kb(args)
+    if args.command == "intake":
+        return intake(args)
     if args.command == "backtest":
         return backtest(args)
     if args.command == "audit-gen":

@@ -28,7 +28,7 @@ RESULTS_DIR = Path(pipeline.PROJECT_ROOT) / "backtest_engine" / "results"
 JOBS_PATH = RESULTS_DIR / "jobs.jsonl"
 
 KNOWN_COMMANDS = {
-    "validate-data", "generate", "generate-kb",
+    "validate-data", "generate", "generate-kb", "intake",
     "backtest", "audit-gen", "evolve",
 }
 
@@ -106,6 +106,12 @@ def _dispatch(command: str, params: Dict[str, Any]) -> int:
             prefer=str(params.get(
                 "prefer",
                 "Gold (XAUUSD),Forex,Commodities,Commodities (Gold)")),
+        ))
+    if command == "intake":
+        return pipeline.intake(argparse.Namespace(
+            source=str(params.get("source", "internet")),
+            limit_per_feed=int(params.get("limit_per_feed", 4)),
+            count=int(params.get("count", 3)),
         ))
     if command == "evolve":
         return pipeline.evolve(argparse.Namespace(

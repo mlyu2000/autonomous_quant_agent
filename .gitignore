@@ -89,3 +89,6 @@ backtest_engine/run_mt5*
 backtest_engine/MQ5TEST.sh
 backtest_engine/mt4_strategies/
 backtest_reports/
+# knowledge_intake runtime state
+knowledge_intake/intake_state.json
+knowledge_intake/intake_log.jsonl

@@ -8,6 +8,7 @@ Entry: pipeline.py serve --port 8050 (uvicorn runs ui.server:app).
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -100,6 +101,31 @@ def api_data_lake():
 @app.get("/api/kb")
 def api_kb():
     return {"last_run": collect.get_kb_last_run()}
+
+
+@app.get("/api/intake")
+def api_intake():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    ki = root / "knowledge_intake"
+    state, log = None, []
+    if (ki / "intake_state.json").exists():
+        try:
+            state = json.loads((ki / "intake_state.json").read_text())
+        except Exception:
+            state = None
+    if (ki / "intake_log.jsonl").exists():
+        try:
+            lines = (ki / "intake_log.jsonl").read_text().splitlines()
+            log = [json.loads(x) for x in lines[-50:] if x.strip()]
+        except Exception:
+            log = []
+    return {
+        "last_run": (state or {}).get("last_run"),
+        "totals": (state or {}).get("totals", {}),
+        "ingested_count": len((state or {}).get("ingested_ids", [])),
+        "recent_cycles": list(reversed(log))[:20],
+    }
 
 
 @app.get("/api/governance")

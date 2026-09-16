@@ -15,6 +15,10 @@ window.UI_CONTROL = (function () {
       { key: "use_genome", label: "use genome", type: "checkbox", def: false } ] },
     "generate-kb": { label: "Generate from KB (Neo4j)", params: [
       { key: "count", label: "count", type: "number", def: 8 } ] },
+    intake: { label: "Intake knowledge (internet/LLM)", params: [
+      { key: "source", label: "source (internet|llm|all)", type: "text", def: "all" },
+      { key: "limit_per_feed", label: "items/feed", type: "number", def: 4 },
+      { key: "count", label: "llm count", type: "number", def: 3 } ] },
     backtest: { label: "Backtest all specs", params: [
       { key: "spec_dir", label: "spec dir", type: "text", def: "" },
       { key: "out", label: "out dir", type: "text", def: "" } ] },
@@ -297,8 +301,9 @@ window.UI_CONTROL = (function () {
   // ==================================================== 8. Knowledge Base
   async function renderKB(content) {
     content.innerHTML = "";
-    const [kb, lake, manifest] = await Promise.all([
+    const [kb, lake, manifest, intake] = await Promise.all([
       api.get("/api/kb"), api.get("/api/data-lake"), api.get("/api/manifest"),
+      api.get("/api/intake"),
     ]);
     const stats = kb.last_run;
     content.appendChild(U.card("Knowledge base (Neo4j) — last generate-kb run",
@@ -311,6 +316,32 @@ window.UI_CONTROL = (function () {
             U.kpi("Rejected (validation)", stats.rejected_validation, stats.rejected_validation ? "err" : "dim"),
             U.kpi("Deduped", stats.deduped))
         : U.h("div", { class: "empty" }, "no generate-kb run yet (use Generate & Run)")));
+
+    // Continuous knowledge intake (internet RSS + LLM model) -> Neo4j
+    content.appendChild(U.card("Continuous knowledge intake (internet + LLM)",
+      U.h("div", null,
+        U.h("div", { class: "grid" },
+          U.kpi("Last run", intake.last_run ? intake.last_run.replace("T", " ").replace("+00:00", "Z") : "never", "info"),
+          U.kpi("Strategies ingested", intake.ingested_count, "ok"),
+          U.kpi("From internet", intake.totals?.internet ?? 0, "dim"),
+          U.kpi("From LLM model", intake.totals?.llm ?? 0, "dim")),
+        U.h("p", { class: "dim" },
+          "Pulls new trading knowledge from RSS feeds + the LLM every cycle, extracts it via the " +
+          "6-layer schema, embeds (768d), and stores it in the Neo4j graph. Trigger a single cycle " +
+          "from the Generate & Run tab (command: Intake knowledge). Non-strategic content is skipped " +
+          "(fail-closed, never faked)."),
+        (intake.recent_cycles && intake.recent_cycles.length)
+          ? U.h("table", { class: "data" },
+              U.h("thead", null, U.h("tr", null,
+                ...["time", "source", "strategies", "skipped", "elapsed"].map((x) => U.h("th", null, x)))),
+              U.h("tbody", null, intake.recent_cycles.map((c) => U.h("tr", null,
+                U.h("td", null, (c.at || "").replace("T", " ").replace("+00:00", "")),
+                U.h("td", null, U.chip(c.source, c.source === "llm" ? "warn" : "info")),
+                U.h("td", null, String((c.stats?.ingested || []).length)),
+                U.h("td", null, String(c.stats?.skipped_nonstrat ?? "—")),
+                U.h("td", null, String(c.stats?.elapsed_s ?? "—") + "s")))))
+          : U.h("div", { class: "empty" }, "no intake cycles yet (run 'Intake knowledge' in Generate & Run)")))
+    );
 
     content.appendChild(U.card("Data lake (frozen XAUUSD parquet)",
       U.h("table", { class: "data" },
