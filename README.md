@@ -23,7 +23,7 @@ autonomous_quant_agent/
 ├── backtest_engine/                # authoritative MVP backtester
 │   ├── pipeline.py                 # single entrypoint:
 │   │                               #   validate-data | generate | generate-kb |
-│   │                               #   evolve | backtest | audit-gen | audit-json
+│   │                               #   evolve | backtest | audit-gen | audit-json | serve
 │   ├── engine/runner.py           # Backtrader harness: broker, spread pricing,
 │   │                               #   analyzers, equity safety guard
 │   ├── engine/custom_analyzers.py # CriticAnalyzer (per-trade MAFE/MFE log)
@@ -51,6 +51,17 @@ autonomous_quant_agent/
 │   ├── data/manifest.json         # frozen data contract (costs, spread, swap,
 │   │                               #   leverage, periods)
 │   ├── data_lake/                 # FROZEN XAUUSD M1/M15/H1/H4/D1 parquet
+│   ├── ui/                        # CONTROL PLANE: FastAPI server + single-page UI
+│   │   │                           #   (`pipeline.py serve`; see "Control plane")
+│   │   ├── collect.py             # read layer: on-disk artifacts -> API dicts
+│   │   ├── server.py              # FastAPI app (all /api/* + static UI)
+│   │   ├── jobs.py                # thread job queue (real pipeline commands,
+│   │   │                           #   kill, logs, results/jobs.jsonl)
+│   │   ├── control.py             # governed writes: spec CRUD, genome edits
+│   │   │                           #   (LOW auto-apply / HIGH rejected-store),
+│   │   │                           #   review board, events.jsonl
+│   │   ├── index.html / app.js / app2.js / style.css   # 8-tab UI
+│   │   └── tests/test_ui.py       # 16 control-plane tests (truth baseline)
 │   ├── tests/                     # 48 tests (truth baseline, generator, gates,
 │   │                               #   indicator compilability, evolution)
 │   ├── results/rejected_proposals.jsonl  # HIGH-risk framework proposals
@@ -182,6 +193,9 @@ NEO4J_PASSWORD=*** ./venv/bin/python pipeline.py generate-kb --count 8
 #    auto-apply the LOW-risk improvement (committed), and record the
 #    HIGH-risk framework proposals it observes for human re-review
 ./venv/bin/python pipeline.py evolve --generations 2 --pop-size 2 --specs-per-genome 3
+
+# 6. (optional) start the control-plane UI + API server (browser on :8050)
+./venv/bin/python pipeline.py serve --port 8050
 ```
 
 Gates emit **PASS / FAIL / INCONCLUSIVE** only. A strategy that loses money,
@@ -189,6 +203,44 @@ has <12 trades, a PnL/commission mismatch, a single trade dominating profit,
 concentrates all profit in one year, or whose edge does not survive
 commission+swap is **FAIL** — never silently "profitable". A run that simply
 lacks evidence is **INCONCLUSIVE**, never a silent pass.
+
+### Control plane (UI + management)
+
+`pipeline.py serve` runs a local FastAPI server (`ui/server.py`) that serves a
+single-page control plane (`ui/index.html`, vanilla JS + ECharts, no build
+step). It is the management + observability surface for the whole system:
+
+**Observability (read-only, always matches files on disk):**
+- **Runs** — every backtest run (KPI rollup, PASS/FAIL/INCONCLUSIVE from the
+  real audit file, error flags) → per-spec detail (return/MaxDD/Sharpe/Sortino/
+  Calmar/SQN/PF/trades/commissions/buy-and-hold + trade log) + return-vs-B&H chart
+- **Audit** — PASS/FAIL/INCONCLUSIVE stacked per generation + failed-item
+  drill-down (per-gate metrics)
+- **Evolution** — fitness over generations, auto-applied state, best genome
+- **Knowledge Base** — frozen data contract, data-lake inventory (rows/dates/
+  size from the real parquet), last `generate-kb` mapping stats (pulled/mapped/
+  skipped-unmappable — unmappable is honest, never fabricated)
+
+**Control (governed writes — same code paths as the CLI, never re-implemented):**
+- **Generate & Run** — trigger any pipeline command (validate-data, generate,
+  generate-kb, backtest, audit-gen, evolve) as a live job: status, logs, kill
+  (cooperative), persisted to `results/jobs.jsonl`; activity feed
+  (`results/events.jsonl`)
+- **Strategies** — create / edit / archive specs. Every write re-validates with
+  the **existing** grammar + schema validators (fail-closed, no `eval`);
+  invalid conditions are rejected verbatim
+- **Genome** — edit the builder genome through `governance.classify_risk()`:
+  LOW risk (within declared bounds) auto-applies; HIGH risk (out of bounds /
+  unknown field) is **stored in `results/rejected_proposals.jsonl`, never
+  applied**
+- **Review Board** — the rejected-proposal store with the 5-generation
+  re-review cadence: approve (accept manually) / hold / reject; protected
+  surfaces (skeptical gates, grammar, compiler, manifest, credentials) listed
+  read-only — the UI can never modify them
+
+Boundaries: local tool (no auth/multi-user); backtest-only (no MT5/live
+trading in the MVP); kill is cooperative (flag set, takes effect when the
+command returns); UI data is strictly file-grounded — no invented metrics.
 
 ### Neo4j knowledge-base wiring
 
@@ -224,7 +276,8 @@ code path that turns a graph `Strategy` into a runnable spec:
 
 ```bash
 cd backtest_engine
-./venv/bin/python -m pytest tests/ -q   # 48 tests
+./venv/bin/python -m pytest tests/ -q        # 48 core tests
+./venv/bin/python -m pytest ui/tests/ -q     # 16 control-plane tests
 ```
 
 Covers: truth-baseline equity math, generator dedupe (distinct theses only),

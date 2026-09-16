@@ -353,6 +353,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     sub.add_parser("audit-json")
 
+    serve = sub.add_parser("serve", help="run the control-plane UI + API server")
+    serve.add_argument("--port", type=int, default=8050)
+    serve.add_argument("--host", default="127.0.0.1")
+
     args = parser.parse_args(argv)
     if args.command == "validate-data":
         return validate_data()
@@ -368,6 +372,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return audit_gen(args)
     if args.command == "audit-json":
         return audit_json(args)
+    if args.command == "serve":
+        import uvicorn
+        uvicorn.run("ui.server:app", host=args.host, port=args.port, log_level="warning")
+        return 0
     parser.print_help()
     return 2
 
