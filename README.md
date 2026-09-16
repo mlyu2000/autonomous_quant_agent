@@ -23,7 +23,7 @@ autonomous_quant_agent/
 ├── backtest_engine/                # authoritative MVP backtester
 │   ├── pipeline.py                 # single entrypoint:
 │   │                               #   validate-data | generate | generate-kb |
-│   │                               #   backtest | audit-gen | audit-json
+│   │                               #   evolve | backtest | audit-gen | audit-json
 │   ├── engine/runner.py           # Backtrader harness: broker, spread pricing,
 │   │                               #   analyzers, equity safety guard
 │   ├── engine/custom_analyzers.py # CriticAnalyzer (per-trade MAFE/MFE log)
@@ -36,6 +36,14 @@ autonomous_quant_agent/
 │   │   │                           #   (mechanism + indicator core + direction)
 │   │   ├── strategy_generator.py  # template theses + mutation + dedupe
 │   │   └── neo4j_bridge.py        # Neo4j graph -> valid specs (KB wiring)
+│   ├── evolution/                 # SELF-EVOLUTION: the system evolves its own
+│   │   │                           #   framework ingredients (EA over a genome)
+│   │   ├── genome.py              # bounded genome (search-distribution genes)
+│   │   ├── genome_generator.py    # genome -> distinct specs (fail-closed)
+│   │   ├── fitness.py             # mechanism-agnostic fitness (real audit PASSes)
+│   │   ├── governance.py          # harmlessness gate + rejected_proposals store
+│   │   ├── evolve.py              # the EA loop (real backtests + real audit)
+│   │   └── evolution_state.json   # auto-applied baseline genome (committed)
 │   ├── audit/gates.py             # 8 gates (sample, min/yr, time-stability,
 │   │                               #   pnl-invariant, outlier, DD, cost-ratio,
 │   │                               #   open-position)
@@ -43,8 +51,10 @@ autonomous_quant_agent/
 │   ├── data/manifest.json         # frozen data contract (costs, spread, swap,
 │   │                               #   leverage, periods)
 │   ├── data_lake/                 # FROZEN XAUUSD M1/M15/H1/H4/D1 parquet
-│   ├── tests/                     # 34 tests (truth baseline, generator, gates,
-│   │                               #   indicator compilability)
+│   ├── tests/                     # 48 tests (truth baseline, generator, gates,
+│   │                               #   indicator compilability, evolution)
+│   ├── results/rejected_proposals.jsonl  # HIGH-risk framework proposals
+│   │                               #   (never auto-applied; re-reviewed every 5 gens)
 │   └── requirements.txt
 └── knowledge_base/                 # YouTube -> Neo4j -> synthesis (first-class)
     ├── core/                      # smb_schema_v6.py (pydantic schema)
@@ -73,7 +83,46 @@ manifest.json (frozen costs/periods)
         │  run_<ts>/*_metrics.json + run_manifest.json
    audit   (8 gates -> PASS / FAIL / INCONCLUSIVE)
         │  results/audit/audit_gen_<N>.json
+        │
+   evolve  (EA over the genome: re-runs generate->backtest->audit for
+            several candidate genomes, fitness = # genuinely-PASS survivors;
+            the fittest LOW-risk genome is auto-applied as the new baseline
+            (committed); HIGH-risk framework proposals it observes go to
+            results/rejected_proposals.jsonl for human re-review)
 ```
+
+## Self-evolution (the system improves its own framework)
+
+The stated objective is a system that *improves its own framework over time,
+not just the strategies it produces*. The `evolution/` package implements this
+as an evolutionary algorithm over a **genome** — a bounded, JSON,
+fail-closed representation of the builder's *search distribution* (the
+framework's ingredients): indicator-lookback range, TP/SL magnitude bands,
+Bollinger dev, mutation rate, and a seed.
+
+- **What evolves**: the genome (WHERE the search looks) — not the skeptical
+  auditor. `pipeline.py evolve --generations N` runs the EA: each candidate
+  genome shapes a batch of distinct specs, which are backtested on the frozen
+  data lake and audited by the real gates. Fitness is mechanism-agnostic
+  (count of genuinely-PASS survivors + a conservative quality tiebreak), so a
+  genome is only "fitter" if it produces more validated survivors.
+- **Governance (the safety model)**:
+  - **LOW-risk** = a genome/search-distribution change, strictly within
+    declared bounds, touching only the `evolution/` surface → **auto-applied**
+    (becomes the new committed baseline genome). A no-regression guard means a
+    genome is only applied if it is not worse than the incumbent baseline.
+  - **HIGH-risk** = anything touching the skeptical gates, the frozen manifest,
+    the shared grammar, the compiler/runner/schema, or credentials → **NEVER
+    auto-applied**. The EA *observes its own failure modes* (e.g. a gate
+    binding on N specs, zero PASS across the population) and records such
+    framework changes to `results/rejected_proposals.jsonl`, where they are
+    **re-reviewed every 5 generations** by a human. Rejected proposals are
+    kept, never discarded.
+  - **Harmlessness gate**: a hard check that no proposal — regardless of its
+    declared risk — may touch a protected surface. The EA can tune its search,
+    it cannot rewrite the auditor.
+- **No manual menu edits**: the only way to change the builder's ingredients is
+  through this EA loop (or a human explicitly accepting a HIGH-risk proposal).
 
 ## Honest execution model (MVP)
 
@@ -116,6 +165,8 @@ cd backtest_engine
 
 # 2. generate distinct strategy specs (template theses, deduped)
 ./venv/bin/python pipeline.py generate --count 8
+#    (optional) shape the search with the auto-applied evolved genome:
+./venv/bin/python pipeline.py generate --count 8 --use-genome
 
 # 2b. (optional) pull mappable strategies from the Neo4j knowledge base
 NEO4J_PASSWORD=*** ./venv/bin/python pipeline.py generate-kb --count 8
@@ -126,6 +177,11 @@ NEO4J_PASSWORD=*** ./venv/bin/python pipeline.py generate-kb --count 8
 # 4. run the validation gates over the run
 ./venv/bin/python pipeline.py audit-gen
 ./venv/bin/python pipeline.py audit-json
+
+# 5. (optional) run the self-evolution EA: evolve the builder's genome,
+#    auto-apply the LOW-risk improvement (committed), and record the
+#    HIGH-risk framework proposals it observes for human re-review
+./venv/bin/python pipeline.py evolve --generations 2 --pop-size 2 --specs-per-genome 3
 ```
 
 Gates emit **PASS / FAIL / INCONCLUSIVE** only. A strategy that loses money,
@@ -168,15 +224,21 @@ code path that turns a graph `Strategy` into a runnable spec:
 
 ```bash
 cd backtest_engine
-./venv/bin/python -m pytest tests/ -q   # 34 tests
+./venv/bin/python -m pytest tests/ -q   # 48 tests
 ```
 
 Covers: truth-baseline equity math, generator dedupe (distinct theses only),
 audit gates (the PnL-invariant now reconciles two INDEPENDENT sources — the
 broker balance-sheet value vs the per-trade log — and is a real check, not a
 tautology; outlier resistance blocks single-trade results; time-stability uses
-real trade dates), and indicator compilability (every grammar-whitelisted
-indicator compiles AND runs — the regression guard for grammar/compiler drift).
+real trade dates), indicator compilability (every grammar-whitelisted
+indicator compiles AND runs — the regression guard for grammar/compiler drift),
+and the self-evolution subsystem (genome bounds / fail-closed mutation,
+mechanism-agnostic fitness, the harmlessness gate + rejected-proposal store
+with its 5-generation re-review cadence, and the genome->spec bridge).
+
+The real end-to-end `pipeline.py evolve` (real backtests + real audit) is an
+integration run, exercised separately rather than in the fast unit suite.
 
 ## Known limitations / honesty notes
 

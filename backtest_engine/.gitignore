@@ -3,4 +3,5 @@ strategies/
 results/
 generated_strategies/
 tmp_test_specs/
+evolution/_work/
 .pytest_cache/

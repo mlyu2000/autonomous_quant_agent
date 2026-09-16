@@ -1,0 +1,169 @@
+{
+  "updated_at": "2026-09-16T07:18:40Z",
+  "baseline_genome": {
+    "genome_id": "baseline",
+    "lookback_min": 8,
+    "lookback_max": 120,
+    "lookback_deltas": [
+      1,
+      2,
+      5
+    ],
+    "tp_min": 0.008,
+    "tp_max": 0.02,
+    "sl_min": 0.004,
+    "sl_max": 0.01,
+    "tp_delta": 0.002,
+    "sl_delta": 0.001,
+    "bbands_dev_min": 1.5,
+    "bbands_dev_max": 2.3,
+    "mutation_rate": 0.7,
+    "seed": 20260915
+  },
+  "best_genome": {
+    "genome_id": "baseline_m84059",
+    "lookback_min": 8,
+    "lookback_max": 104,
+    "lookback_deltas": [
+      1,
+      2,
+      3,
+      5
+    ],
+    "tp_min": 0.010104565727899716,
+    "tp_max": 0.02331321587808516,
+    "sl_min": 0.002523177640418522,
+    "sl_max": 0.009584646267595082,
+    "tp_delta": 0.002908809396018382,
+    "sl_delta": 8.00475636473228e-05,
+    "bbands_dev_min": 1.3456221644689825,
+    "bbands_dev_max": 2.11711522900137,
+    "mutation_rate": 0.7447824992523341,
+    "seed": 1198095317
+  },
+  "best_fitness": {
+    "pass_count": 2,
+    "inconclusive_count": 0,
+    "fail_count": 1,
+    "total_evaluated": 3,
+    "pass_rate": 0.6667,
+    "mean_pass_return_pct": 15.445,
+    "mean_pass_max_dd_pct": 6.855,
+    "score": 24.5351,
+    "rank_key": [
+      2,
+      0.6666666666666666,
+      15.445,
+      -6.855
+    ]
+  },
+  "baseline_fitness_at_eval": {
+    "pass_count": 2,
+    "inconclusive_count": 0,
+    "fail_count": 1,
+    "total_evaluated": 3,
+    "pass_rate": 0.6667,
+    "mean_pass_return_pct": 15.675,
+    "mean_pass_max_dd_pct": 6.515,
+    "score": 24.5751,
+    "rank_key": [
+      2,
+      0.6666666666666666,
+      15.675,
+      -6.515000000000001
+    ]
+  },
+  "improved_over_baseline": false,
+  "auto_applied": false,
+  "history": [
+    {
+      "generation": 1,
+      "genomes": [
+        {
+          "genome_id": "baseline",
+          "fitness": {
+            "pass_count": 1,
+            "inconclusive_count": 0,
+            "fail_count": 2,
+            "total_evaluated": 3,
+            "pass_rate": 0.3333,
+            "mean_pass_return_pct": 17.63,
+            "mean_pass_max_dd_pct": 5.55,
+            "score": 13.1522,
+            "rank_key": [
+              1,
+              0.3333333333333333,
+              17.63,
+              -5.55
+            ]
+          }
+        },
+        {
+          "genome_id": "baseline_m84059",
+          "fitness": {
+            "pass_count": 2,
+            "inconclusive_count": 0,
+            "fail_count": 1,
+            "total_evaluated": 3,
+            "pass_rate": 0.6667,
+            "mean_pass_return_pct": 15.445,
+            "mean_pass_max_dd_pct": 6.855,
+            "score": 24.5351,
+            "rank_key": [
+              2,
+              0.6666666666666666,
+              15.445,
+              -6.855
+            ]
+          }
+        }
+      ],
+      "high_risk_proposals_recorded": []
+    },
+    {
+      "generation": 2,
+      "genomes": [
+        {
+          "genome_id": "baseline_m84059",
+          "fitness": {
+            "pass_count": 1,
+            "inconclusive_count": 0,
+            "fail_count": 2,
+            "total_evaluated": 3,
+            "pass_rate": 0.3333,
+            "mean_pass_return_pct": 12.99,
+            "mean_pass_max_dd_pct": 7.65,
+            "score": 12.5832,
+            "rank_key": [
+              1,
+              0.3333333333333333,
+              12.99,
+              -7.65
+            ]
+          }
+        },
+        {
+          "genome_id": "baseline_m85464",
+          "fitness": {
+            "pass_count": 1,
+            "inconclusive_count": 0,
+            "fail_count": 2,
+            "total_evaluated": 3,
+            "pass_rate": 0.3333,
+            "mean_pass_return_pct": 3.04,
+            "mean_pass_max_dd_pct": 2.74,
+            "score": 11.8337,
+            "rank_key": [
+              1,
+              0.3333333333333333,
+              3.04,
+              -2.74
+            ]
+          }
+        }
+      ],
+      "high_risk_proposals_recorded": []
+    }
+  ],
+  "seed": 20260915
+}

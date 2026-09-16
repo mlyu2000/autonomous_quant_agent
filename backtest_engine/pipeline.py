@@ -108,14 +108,6 @@ def validate_data() -> int:
     return 0
 
 
-def generate(args: argparse.Namespace) -> int:
-    out_dir = PROJECT_ROOT / "backtest_engine/strategies"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    specs = generate_specs(args.count, out_dir)
-    print(f"generated {len(specs)}/{args.count} distinct specs under {out_dir}")
-    return 0 if specs else 1
-
-
 def generate_kb(args: argparse.Namespace) -> int:
     """Pull mappable strategies from the Neo4j knowledge base into specs."""
     from synthesis_layer.neo4j_bridge import fetch_and_build_specs, write_kb_specs
@@ -129,6 +121,62 @@ def generate_kb(args: argparse.Namespace) -> int:
         return 1
     paths = write_kb_specs(specs, out_dir)
     print(f"wrote {len(paths)} KB-sourced specs to {out_dir}")
+    return 0
+
+
+def _load_evolved_genome():
+    """Load the current baseline genome (the auto-applied LOW-risk
+    improvement), or None if no evolution has run yet."""
+    state_path = PROJECT_ROOT / "backtest_engine/evolution/evolution_state.json"
+    if not state_path.exists():
+        return None
+    from evolution.genome import Genome
+    return Genome.from_dict(json.loads(state_path.read_text())["baseline_genome"])
+
+
+def generate(args: argparse.Namespace) -> int:
+    out_dir = PROJECT_ROOT / "backtest_engine/strategies"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.use_genome:
+        genome = _load_evolved_genome()
+        if genome is None:
+            print("no evolved genome found (run `pipeline.py evolve` first); "
+                  "falling back to the default baseline")
+            genome = None
+        if genome is not None:
+            from evolution.genome_generator import genome_generate_specs
+            specs = genome_generate_specs(genome, args.count, out_dir)
+            print(f"generated {len(specs)}/{args.count} distinct genome-shaped specs under {out_dir}")
+            return 0 if specs else 1
+    specs = generate_specs(args.count, out_dir)
+    print(f"generated {len(specs)}/{args.count} distinct specs under {out_dir}")
+    return 0 if specs else 1
+
+
+def evolve(args: argparse.Namespace) -> int:
+    """Run the self-evolution loop: evolve the builder's genome via the EA,
+    auto-apply the LOW-risk improvement, record HIGH-risk framework proposals
+    to the rejected store (never auto-applied)."""
+    from evolution.evolve import run_evolution
+    from evolution.genome import Genome
+    baseline = _load_evolved_genome()  # resume from the last auto-applied genome
+    state = run_evolution(
+        generations=args.generations,
+        pop_size=args.pop_size,
+        n_specs=args.specs_per_genome,
+        start_genome=baseline,
+        workdir=PROJECT_ROOT / "backtest_engine/evolution/_work",
+        state_path=PROJECT_ROOT / "backtest_engine/evolution/evolution_state.json",
+        rejected_store=PROJECT_ROOT / "backtest_engine/results/rejected_proposals.jsonl",
+        seed=args.seed,
+    )
+    print(json.dumps({
+        "improved_over_baseline": state["improved_over_baseline"],
+        "auto_applied": state["auto_applied"],
+        "best_fitness": state["best_fitness"],
+        "baseline_fitness_at_eval": state["baseline_fitness_at_eval"],
+        "new_baseline": state["baseline_genome"]["genome_id"],
+    }, indent=2))
     return 0
 
 
@@ -283,10 +331,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     gen = sub.add_parser("generate")
     gen.add_argument("--count", type=int, default=10)
+    gen.add_argument("--use-genome", action="store_true",
+                     help="shape specs with the auto-applied evolved genome (from `pipeline.py evolve`)")
 
     gen_kb = sub.add_parser("generate-kb", help="pull mappable strategies from the Neo4j knowledge base")
     gen_kb.add_argument("--count", type=int, default=8)
     gen_kb.add_argument("--prefer", default="Gold (XAUUSD),Forex,Commodities,Commodities (Gold)")
+
+    ev = sub.add_parser("evolve", help="run the self-evolution EA (evolve the builder's genome)")
+    ev.add_argument("--generations", type=int, default=2)
+    ev.add_argument("--pop-size", type=int, default=2)
+    ev.add_argument("--specs-per-genome", type=int, default=3)
+    ev.add_argument("--seed", type=int, default=20260915)
 
     bt_parser = sub.add_parser("backtest")
     bt_parser.add_argument("--spec-dir", default=str(PROJECT_ROOT / "backtest_engine/strategies"))
@@ -302,6 +358,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return validate_data()
     if args.command == "generate":
         return generate(args)
+    if args.command == "evolve":
+        return evolve(args)
     if args.command == "generate-kb":
         return generate_kb(args)
     if args.command == "backtest":
